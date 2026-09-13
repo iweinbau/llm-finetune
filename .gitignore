@@ -1,0 +1,13 @@
+# data & model outputs are never committed (CT-RATE terms; size)
+data/raw/
+data/processed/
+adapters/
+results/
+!results/.gitkeep
+.venv/
+.venv-ci/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.DS_Store

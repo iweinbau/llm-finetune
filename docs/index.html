@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Teaching a small LLM to read CT reports</title>
+<meta name="description" content="LoRA fine-tuning of a 4B model on a MacBook so it extracts findings from chest CT reports and backs every claim with a quote from the report. Before/after results, real examples.">
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+    --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,0.10);
+    --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4;
+    --good: #0ca30c; --critical: #d03b3b; --serious: #ec835a;
+    --hl-supported: rgba(12,163,12,0.18); --hl-fab: rgba(208,59,59,0.18);
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+      --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+      --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181;
+      --hl-supported: rgba(12,163,12,0.28); --hl-fab: rgba(208,59,59,0.30);
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181;
+    --hl-supported: rgba(12,163,12,0.28); --hl-fab: rgba(208,59,59,0.30);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--page); color: var(--ink);
+    font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  body { padding-block: 36px 64px; padding-inline: clamp(16px, 4vw, 48px); }
+  main { max-width: 1000px; margin: 0 auto; }
+  h1 { font-size: clamp(26px, 3.4vw, 38px); line-height: 1.12; margin: 0 0 10px; letter-spacing: -0.015em; }
+  h2 { font-size: 21px; margin: 44px 0 10px; }
+  h3 { font-size: 13px; margin: 0 0 6px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+  p { max-width: 70ch; }
+  .lede { color: var(--ink-2); font-size: 17px; margin: 0; }
+  .meta { color: var(--muted); font-size: 13px; }
+  .verdict { font-size: 17px; line-height: 1.45; max-width: none; margin: 0 0 14px; }
+  a { color: var(--s1); }
+  code, .mono { font-family: var(--mono); font-size: 0.92em; }
+  .banner { border: 1px solid var(--border); border-left: 4px solid #fab219; background: var(--surface);
+    padding: 10px 14px; border-radius: 6px; margin: 16px 0 0; font-size: 14px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px 22px; }
+  .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; margin-top: 14px; }
+  .step .big { font-size: 26px; font-weight: 650; letter-spacing: -0.01em; }
+  .step p { font-size: 14px; color: var(--ink-2); margin: 6px 0 0; }
+  .swatch { width: 10px; height: 10px; border-radius: 3px; display: inline-block; flex: none; }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 13px; color: var(--ink-2); margin: 6px 0 10px; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 760px) { .grid2 { grid-template-columns: 1fr; } }
+  svg { display: block; width: 100%; height: auto; overflow: visible; }
+  .chart-wrap { overflow-x: auto; }
+  .tip { position: fixed; pointer-events: none; background: var(--ink); color: var(--page); padding: 6px 9px;
+    border-radius: 6px; font-size: 12.5px; line-height: 1.35; max-width: 320px; z-index: 10; display: none; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--grid); vertical-align: top; }
+  th { color: var(--ink-2); font-weight: 600; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .table-wrap { overflow-x: auto; }
+  .controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; font-size: 13px; }
+  select, button { font: inherit; font-size: 13px; color: var(--ink); background: var(--surface);
+    border: 1px solid var(--axis); border-radius: 6px; padding: 5px 9px; cursor: pointer; }
+  button[aria-pressed="true"] { border-color: var(--ink); font-weight: 600; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; justify-content: space-between; }
+  .report { white-space: pre-wrap; font-size: 14px; line-height: 1.6; background: var(--page);
+    border: 1px solid var(--grid); border-radius: 8px; padding: 14px 16px; }
+  mark { border-radius: 3px; padding: 0 2px; color: inherit; }
+  mark.supported { background: var(--hl-supported); box-shadow: inset 0 -2px 0 var(--good); }
+  .pill { display: inline-block; font-size: 12px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--axis); color: var(--ink-2); white-space: nowrap; vertical-align: middle; }
+  .absent { color: var(--muted); }
+  .gallery-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr); gap: 16px; align-items: start; }
+  @media (max-width: 760px) { .gallery-grid { grid-template-columns: 1fr; } }
+  #sample-table td, #sample-table th { vertical-align: middle; padding: 7px 6px; }
+  #sample-table th:not(:first-child), #sample-table td:not(:first-child) { white-space: nowrap; width: 1%; }
+  #sample-table td .quote { white-space: normal; font-size: 12px; color: var(--muted); margin-top: 3px; max-width: 260px; }
+  .pill.ok { border-color: var(--good); } .pill.bad { border-color: var(--critical); } .pill.warn { border-color: var(--serious); }
+  footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--grid); color: var(--muted); font-size: 13px; }
+  footer p { max-width: none; margin: 6px 0; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Teaching a small language model to read CT reports</h1>
+    <p class="lede">I fine-tuned a 4-billion-parameter open model on a MacBook so that it turns a radiologist's free-text
+      chest CT report into a structured list of findings, and backs <em>every</em> finding with a quote from the report.
+      Then I measured how often each model version claimed something it couldn't back up.</p>
+    <div id="banner"></div>
+  </header>
+
+  <section id="what">
+    <h2>The approach</h2>
+    <div class="steps">
+      <div class="card step"><h3>1 · Data</h3><div class="big" id="step-data-big">—</div><p id="step-data"></p></div>
+      <div class="card step"><h3>2 · Fine-tuning</h3><div class="big">LoRA on Qwen3-4B</div><p id="step-model"></p></div>
+      <div class="card step"><h3>3 · Evaluation</h3><div class="big" id="step-eval-big">—</div><p id="step-eval"></p></div>
+    </div>
+  </section>
+
+  <section id="compare">
+    <h2>Model validation test</h2>
+    <p class="verdict" id="verdict">Loading…</p>
+    <div class="card">
+      <div class="legend" id="arm-legend"></div>
+      <div class="grid2">
+        <div><h3><span id="chart-unsup-title"></span> <span style="text-transform:none;letter-spacing:0">· lower is better</span></h3><div class="chart-wrap" id="chart-unsup"></div></div>
+        <div><h3><span id="chart-f1-title"></span> <span style="text-transform:none;letter-spacing:0">· higher is better</span></h3><div class="chart-wrap" id="chart-f1"></div></div>
+      </div>
+      <div class="table-wrap" style="margin-top:16px" id="compare-table"></div>
+      <p class="meta" id="compare-meta" style="margin:12px 0 0"></p>
+    </div>
+  </section>
+
+  <section id="gallery">
+    <div class="row">
+      <h2>Real examples</h2>
+      <div class="controls">
+        <label for="sample-select">Report</label>
+        <select id="sample-select"></select>
+        <span id="arm-tabs"></span>
+      </div>
+    </div>
+    <p>Left: the radiologist's report, with the model's quotes highlighted where they were found in the text.
+      Right: what the reference labels say versus what the model said, and whether each claim came with a quote.</p>
+    <div class="gallery-grid">
+      <div class="report" id="sample-report"></div>
+      <div class="table-wrap" id="sample-table"></div>
+    </div>
+  </section>
+
+  <footer>
+    <p><strong>Notes.</strong> Test reports come from patients never used in training. "Claims without evidence" counts findings
+      a model marked present whose quote was missing, under three words, or not found verbatim in the report. Reference labels
+      come from CT-RATE and were produced by a text classifier, so "agreement" is not the same as clinical accuracy. The quote
+      check catches invented text, not misread text; a clinician audit in the repository covers that gap on a sample.</p>
+    <p><strong>Data credit.</strong> Reports and labels are from <a href="https://huggingface.co/datasets/ibrahimhamamci/CT-RATE">CT-RATE</a>,
+      created by Ibrahim Ethem Hamamci, Sezgin Er, Bjoern Menze and colleagues (Hamamci et al., <em>Nature Biomedical Engineering</em> 2026;
+      GenerateCT, ECCV 2024; CT2Rep, MICCAI 2024; Better Tokens for Better 3D, NeurIPS 2025; CRG Score, MIDL 2025). Full BibTeX is in the
+      repository's <code>CITATION.bib</code>. CT-RATE is released under <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/">CC BY-NC-SA 4.0</a>; the report excerpts shown on this page are shared under the same license, for non-commercial use, with attribution.</p>
+    <p>Every number on this page is computed from raw model outputs by the evaluation code; nothing is typed in by hand. <span id="run-meta"></span></p>
+  </footer>
+</main>
+<div class="tip" id="tip" role="tooltip"></div>
+
+<script src="results.js"></script>
+<script>
+(function () {
+  const R = window.LLM_FINETUNE_RESULTS, S = window.LLM_FINETUNE_SAMPLES || [];
+  const $ = (id) => document.getElementById(id);
+  const pct = (v, d = 1) => (v == null ? '–' : (100 * v).toFixed(d) + '%');
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+  if (!R) {
+    $('verdict').textContent = 'No results yet.';
+    $('banner').innerHTML = '<div class="banner">Run <code>make site</code> to generate <code>docs/results.js</code>; this page renders that file.</div>';
+    return;
+  }
+
+  // =====================================================================================
+  //  EDIT ME — all the wording that depends on the numbers lives here.
+  //  Static text (title, intro, section headings, footnote) is plain HTML further up.
+  //  Inside backtick strings, ${...} is a placeholder that gets filled from results.js;
+  //  edit the words around the placeholders and leave the placeholders as they are.
+  // =====================================================================================
+  const COPY = {
+    // Names of the model versions, long (legend, table) and short (chart labels, buttons).
+    armLabel: { base_zeroshot: 'Before fine-tuning', base_fewshot: 'Before, with 3 examples in the prompt', lora: 'After fine-tuning (LoRA)', claude: 'Frontier model (Claude)' },
+    armShort: { base_zeroshot: 'Before', base_fewshot: 'Before + examples', lora: 'After (LoRA)', claude: 'Claude' },
+
+    // "What I did" cards. `n` values come from the results; `pct` formats 0.123 -> "12.3%".
+    dataBig: (nTrain) => nTrain ? `${nTrain.toLocaleString()} reports` : 'CT-RATE reports',
+    dataText: (nDropped) => `Public chest-CT radiology reports from the CT-RATE dataset (Hamamci et al.), each labelled with 18 possible findings. For training I attached a verbatim quote from the report to every positive finding${nDropped ? `, and dropped ${nDropped.toLocaleString()} reports where that was not possible rather than teach the model to assert without evidence` : ''}.`,
+    modelText: 'Low-rank adapters (rank 8) on a 4-bit Qwen3-4B, trained with mlx-lm on a MacBook in about an hour. The base model is frozen; only the adapters learn the task and the "quote your evidence" habit.',
+    evalBig: (nTest) => `${nTest} unseen reports`,
+    evalText: (nArms) => `${nArms} model version${nArms === 1 ? '' : 's'} under identical instructions. Every finding a model marked present is checked for a verbatim quote in the report; agreement with the reference labels, false alarms on normal reports and output validity are scored alongside, with confidence intervals.`,
+
+    // The one-sentence verdict. `w(delta, up, down, same)` picks a verb from the sign of the change.
+    verdictBoth: (b, a, n, w) => `Fine-tuning <strong>${w(a.unsupported_positive_rate - b.unsupported_positive_rate, 'raised', 'cut', 'left unchanged')}</strong> the share of findings the model claimed without evidence from <strong>${pct(b.unsupported_positive_rate)}</strong> to <strong>${pct(a.unsupported_positive_rate)}</strong>, and <strong>${w(a.micro_f1 - b.micro_f1, 'raised', 'lowered', 'left unchanged')}</strong> agreement with the reference labels from ${pct(b.micro_f1)} to ${pct(a.micro_f1)}, on ${n} reports it had never seen.`,
+    verdictBaseline: (m, name) => `Baseline so far: ${name} claims a finding without evidence <strong>${pct(m.unsupported_positive_rate)}</strong> of the time and agrees with the reference labels at <strong>${pct(m.micro_f1)}</strong> F1. The fine-tuned version has not been evaluated yet.`,
+
+    // Chart panel titles and table column headings.
+    chartUnsup: 'Claims without evidence', chartF1: 'Agreement with reference labels',
+    columns: ['Claims without evidence ↓', 'Agreement (F1) ↑', 'All 18 findings right ↑', 'Well-formed output ↑', 'False alarms on normal reports ↓'],
+
+    // Small note under the comparison table.
+    compareMeta: (nTest, nNormal, covText, models) => `Same reports, same instructions, same scoring for every version; whiskers are 95% confidence intervals. ${covText}, ${nNormal} of them with no reference finding. ${models}.`,
+
+    // Gallery.
+    optionLabel: (id, nPos) => `${id} · ${nPos} finding${nPos === 1 ? '' : 's'} in reference`,
+    normalReport: 'Neither the reference nor the model lists any finding — a normal report, correctly read.',
+  };
+  // ===================================================================== end of EDIT ME
+
+  const ARM_ORDER = ['base_zeroshot', 'base_fewshot', 'lora', 'claude'];
+  const ARM_LABEL = COPY.armLabel, ARM_SHORT = COPY.armShort;
+  const ARM_COLOR = { base_zeroshot: 'var(--s1)', base_fewshot: 'var(--s2)', lora: 'var(--s3)', claude: 'var(--s4)' };
+  const arms = Object.keys(R.arms).sort((a, b) => (ARM_ORDER.indexOf(a) + 99) % 99 - (ARM_ORDER.indexOf(b) + 99) % 99);
+  const armName = (a) => ARM_LABEL[a] || a, armShort = (a) => ARM_SHORT[a] || a, armColor = (a) => ARM_COLOR[a] || 'var(--s5)';
+  const LABELS = R.labels, t = R.test || {};
+  const base = R.arms.base_zeroshot, tuned = R.arms.lora;
+  const ci = (m, k) => (m && m.ci95 && m.ci95[k]) ? m.ci95[k] : null;
+
+  // banners
+  const covs = arms.map((a) => (R.arms[a].coverage || {}).n_scored ?? R.arms[a].n);
+  const minCov = Math.min(...covs), fullCov = covs.every((c) => c === t.n);
+  if (R.demo) $('banner').innerHTML = '<div class="banner"><strong>Demo data.</strong> Synthetic reports and simulated outputs so the page renders before training. Replace by running the pipeline.</div>';
+  else if (!fullCov) $('banner').innerHTML = `<div class="banner"><strong>Partial run.</strong> Scored on only ${minCov} of ${t.n} test reports (a smoke test). Numbers have a margin of several points.</div>`;
+
+  // what I did
+  const ts = (R.train_stats || {}).splits || {};
+  const nTrain = ts.train ? ts.train.n_kept : null, nDropped = ts.train ? ts.train.n_dropped_missing_evidence : null;
+  $('step-data-big').textContent = COPY.dataBig(nTrain);
+  $('step-data').textContent = COPY.dataText(nDropped);
+  $('step-model').textContent = COPY.modelText;
+  $('step-eval-big').textContent = COPY.evalBig(t.n);
+  $('step-eval').textContent = COPY.evalText(arms.length);
+
+  // verdict
+  function verdict() {
+    const w = (v, up, down, same) => Math.abs(v) < 0.015 ? same : v > 0 ? up : down;
+    if (tuned && base && tuned.unsupported_positive_rate != null && base.unsupported_positive_rate != null) {
+      return COPY.verdictBoth(base, tuned, t.n, w);
+    }
+    const only = base || R.arms[arms[0]], nm = base ? 'the un-tuned model' : armName(arms[0]);
+    return COPY.verdictBaseline(only, nm);
+  }
+  $('verdict').innerHTML = verdict();
+
+  // tooltip
+  const tip = $('tip');
+  const moveTip = (e) => { tip.style.left = Math.min(e.clientX + 14, window.innerWidth - 340) + 'px'; tip.style.top = (e.clientY + 14) + 'px'; };
+  const attachTips = (root) => root.querySelectorAll('[data-tip]').forEach((el) => {
+    el.addEventListener('mouseenter', (e) => { tip.innerHTML = el.dataset.tip; tip.style.display = 'block'; moveTip(e); });
+    el.addEventListener('mousemove', moveTip);
+    el.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
+  });
+
+  // comparison bars with CI whiskers
+  $('arm-legend').innerHTML = arms.map((a) => `<span><i class="swatch" style="background:${armColor(a)}"></i>${esc(armName(a))}</span>`).join('');
+  function metricBars(el, key) {
+    const W = 460, rowH = 34, left = 130, right = 60, H = arms.length * rowH + 22;
+    const x = (v) => left + (W - left - right) * v;
+    let svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(key)} per model version">`;
+    [0, 0.5, 1].forEach((g) => svg += `<line x1="${x(g)}" x2="${x(g)}" y1="0" y2="${H - 18}" stroke="var(--grid)"/><text x="${x(g)}" y="${H - 4}" text-anchor="middle" fill="var(--muted)" font-size="11">${g * 100}%</text>`);
+    arms.forEach((a, i) => {
+      const m = R.arms[a], v = m[key], y = 6 + i * rowH, c = ci(m, key);
+      svg += `<text x="${left - 8}" y="${y + 14}" text-anchor="end" fill="var(--ink-2)" font-size="12.5">${esc(armShort(a))}</text>`;
+      if (v == null) { svg += `<text x="${left + 4}" y="${y + 14}" fill="var(--muted)" font-size="12">n/a</text>`; return; }
+      svg += `<rect x="${left}" y="${y}" width="${Math.max(x(v) - left, 1)}" height="20" rx="3" fill="${armColor(a)}" data-tip="<b>${esc(armName(a))}</b><br>${pct(v)}${c ? ` (95% CI ${pct(c.lo)}–${pct(c.hi)})` : ''}"></rect>`;
+      if (c) svg += `<line x1="${x(c.lo)}" x2="${x(c.hi)}" y1="${y + 10}" y2="${y + 10}" stroke="var(--ink)" stroke-width="1.5"/><line x1="${x(c.lo)}" x2="${x(c.lo)}" y1="${y + 5}" y2="${y + 15}" stroke="var(--ink)" stroke-width="1.5"/><line x1="${x(c.hi)}" x2="${x(c.hi)}" y1="${y + 5}" y2="${y + 15}" stroke="var(--ink)" stroke-width="1.5"/>`;
+      svg += `<text x="${W - right + 6}" y="${y + 14}" fill="var(--ink)" font-size="12.5" font-variant-numeric="tabular-nums">${pct(v)}</text>`;
+    });
+    el.innerHTML = svg + '</svg>'; attachTips(el);
+  }
+  $('chart-unsup-title').textContent = COPY.chartUnsup; $('chart-f1-title').textContent = COPY.chartF1;
+  metricBars($('chart-unsup'), 'unsupported_positive_rate');
+  metricBars($('chart-f1'), 'micro_f1');
+  $('compare-table').innerHTML = `<table><thead><tr><th>Version</th>${COPY.columns.map((c) => `<th class="num">${esc(c)}</th>`).join('')}</tr></thead><tbody>${arms.map((a) => { const m = R.arms[a]; return `<tr><td><i class="swatch" style="background:${armColor(a)}"></i> ${esc(armName(a))}</td><td class="num">${pct(m.unsupported_positive_rate)}</td><td class="num">${pct(m.micro_f1)}</td><td class="num">${pct(m.exact_match_rate)}</td><td class="num">${pct(m.json_valid_rate)}</td><td class="num">${pct(m.normal_report_false_alarm_rate)}</td></tr>`; }).join('')}</tbody></table>`;
+  const armModels = arms.map((a) => `${armShort(a)}: ${(R.arms[a].meta || {}).model || '?'}${(R.arms[a].meta || {}).adapter ? ' + LoRA adapter' : ''}${(R.arms[a].meta || {}).shots ? ` (${R.arms[a].meta.shots}-shot)` : ''}`).join(' · ');
+  $('compare-meta').textContent = COPY.compareMeta(t.n, t.n_normal, fullCov ? `${t.n} held-out reports` : `Scored on ${covs.join('/')} of ${t.n} reports`, armModels);
+
+  // gallery
+  if (!S.length) { $('gallery').insertAdjacentHTML('beforeend', '<p class="meta">No samples yet.</p>'); }
+  else {
+    const sel = $('sample-select');
+    S.sort((a, b) => Object.values(b.gold).filter(Boolean).length - Object.values(a.gold).filter(Boolean).length);
+    S.forEach((s, i) => { const nPos = Object.values(s.gold).filter(Boolean).length; sel.insertAdjacentHTML('beforeend', `<option value="${i}">${esc(COPY.optionLabel(s.id, nPos))}</option>`); });
+    let curArm = arms.includes('lora') ? 'lora' : arms[0];
+    $('arm-tabs').innerHTML = arms.map((a) => `<button data-arm="${a}" aria-pressed="${a === curArm}">${esc(armShort(a))}</button>`).join('');
+    $('arm-tabs').querySelectorAll('button').forEach((b) => b.onclick = () => { curArm = b.dataset.arm; $('arm-tabs').querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', x === b)); render(); });
+    sel.onchange = render;
+    const norm = (s) => s.replace(/\s+/g, ' ').trim().toLowerCase();
+    function highlight(report, evid) {
+      const spans = [];
+      Object.entries(evid).forEach(([lab, e]) => {
+        if (!e.quote || e.status !== 'supported') return;
+        const re = new RegExp(norm(e.quote).split(' ').map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+'), 'i');
+        const m = re.exec(report);
+        if (m) spans.push([m.index, m.index + m[0].length, lab]);
+      });
+      spans.sort((a, b) => a[0] - b[0]);
+      let out = '', pos = 0;
+      spans.forEach(([s, e, lab]) => { if (s < pos) return; out += esc(report.slice(pos, s)) + `<mark class="supported" title="${esc(lab)}">${esc(report.slice(s, e))}</mark>`; pos = e; });
+      return out + esc(report.slice(pos));
+    }
+    function render() {
+      const s = S[+sel.value], a = s.arms[curArm] || { abnormalities: {}, evidence: {}, issues: ['no_prediction'] };
+      $('sample-report').innerHTML = highlight(s.report, a.evidence || {});
+      const rows = LABELS.filter((l) => s.gold[l] || a.abnormalities[l]).map((l) => {
+        const g = !!s.gold[l], p = !!a.abnormalities[l], e = (a.evidence || {})[l], st = p ? (e ? e.status : 'missing') : '';
+        const ref = g ? 'present' : '<span class="absent">absent</span>';
+        const model = !p ? '<span class="absent">absent</span>' + (g ? ' <span class="pill warn">missed</span>' : '')
+                         : 'present' + (g ? '' : ' <span class="pill bad">extra</span>');
+        const ev = !p ? '' : st === 'supported' ? '<span class="pill ok">✓ quoted</span>'
+                 : st === 'fabricated' ? `<span class="pill bad">✕ quote not in report</span><div class="quote">“${esc(e.quote)}”</div>`
+                 : `<span class="pill warn">! ${esc(st === 'missing' ? 'no quote' : 'quote too short')}</span>`;
+        return `<tr><td>${esc(l)}</td><td>${ref}</td><td>${model}</td><td>${ev}</td></tr>`;
+      }).join('') || `<tr><td colspan="4" class="meta">${esc(COPY.normalReport)}</td></tr>`;
+      $('sample-table').innerHTML = `<table><thead><tr><th>Finding</th><th>Reference</th><th>Model</th><th>Evidence</th></tr></thead><tbody>${rows}</tbody></table>` + (a.issues && a.issues.length ? `<p class="meta">Parser notes: ${esc(a.issues.join(', '))}</p>` : '');
+    }
+    render();
+  }
+
+  $('run-meta').textContent = `Generated ${R.generated_at || ''}${R.git_sha ? ` · commit ${R.git_sha}` : ''}.`;
+})();
+</script>
+</body>
+</html>

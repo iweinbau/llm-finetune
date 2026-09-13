@@ -1,0 +1,36 @@
+# Smaller variant for 8–16 GB machines or quick iteration (~3–4 GB peak).
+#   mlx_lm.lora -c configs/lora_qwen3_1p7b.yaml
+# Then predict with:  --model mlx-community/Qwen3-1.7B-4bit --adapter adapters/qwen3-1.7b-lora
+
+model: mlx-community/Qwen3-1.7B-4bit
+train: true
+data: data/processed/mlx
+adapter_path: adapters/qwen3-1.7b-lora
+seed: 42
+
+fine_tune_type: lora
+num_layers: 16
+lora_parameters:
+  rank: 8
+  scale: 20.0
+  dropout: 0.05
+  keys: [self_attn.q_proj, self_attn.k_proj, self_attn.v_proj, self_attn.o_proj]
+
+batch_size: 4
+grad_accumulation_steps: 1
+iters: 1200
+learning_rate: 3.0e-5
+lr_schedule:
+  name: cosine_decay
+  warmup: 50
+  warmup_init: 1.0e-7
+  arguments: [3.0e-5, 1200, 1.0e-6]
+
+max_seq_length: 2048
+mask_prompt: true
+grad_checkpoint: true
+
+steps_per_report: 20
+steps_per_eval: 200
+val_batches: 25
+save_every: 200

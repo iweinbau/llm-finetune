@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm-finetune"
+version = "0.1.0"
+description = "Structured, evidence-grounded findings from chest CT radiology reports — a small LoRA fine-tuning project with a faithfulness-first evaluation."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "Iwein" }]
+dependencies = [
+  "pandas>=2.0",
+  "numpy>=1.24",
+  "huggingface_hub>=0.23",
+  "pyyaml>=6.0",
+  "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+# Apple Silicon training + local inference
+mlx = ["mlx-lm>=0.28"]
+# Optional frontier-model arm and Claude-generated silver evidence
+frontier = ["anthropic>=0.40"]
+dev = ["pytest>=8.0", "ruff>=0.5"]
+
+[project.scripts]
+llm-finetune = "llm_finetune.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"

@@ -1,0 +1,46 @@
+# mlx_lm.lora configuration — QLoRA on a 4-bit Qwen3-4B, Apple Silicon.
+#
+#   mlx_lm.lora -c configs/lora_qwen3_4b.yaml
+#
+# Memory: ~7–9 GB peak with these settings (batch 2, seq 2048, grad checkpointing).
+# Time:   roughly 45–90 min for 1200 iterations on an M2/M3 Pro; faster on Max.
+# 1200 iters × batch 2 × accum 2 ≈ 4800 sequences ≈ 1.6 passes over 3000 reports.
+# If loss plateaus early, stop — the format is learned quickly; over-training on
+# noisy silver evidence hurts more than it helps.
+
+model: mlx-community/Qwen3-4B-4bit
+train: true
+data: data/processed/mlx          # expects train.jsonl + valid.jsonl with {"messages": [...]}
+adapter_path: adapters/qwen3-4b-lora
+seed: 42
+
+fine_tune_type: lora
+num_layers: 16                    # last N transformer blocks get adapters (Qwen3-4B has 36)
+lora_parameters:
+  rank: 8
+  scale: 20.0
+  dropout: 0.05
+  keys:                           # attention-only adapters; add mlp.* for more capacity (+memory)
+    - self_attn.q_proj
+    - self_attn.k_proj
+    - self_attn.v_proj
+    - self_attn.o_proj
+
+batch_size: 2
+grad_accumulation_steps: 2
+iters: 1200
+learning_rate: 2.0e-5
+lr_schedule:
+  name: cosine_decay
+  warmup: 50
+  warmup_init: 1.0e-7
+  arguments: [2.0e-5, 1200, 1.0e-6]   # [init_lr, decay_steps, end_lr]
+
+max_seq_length: 2048
+mask_prompt: true                 # loss only on the assistant JSON, not on the report text
+grad_checkpoint: true
+
+steps_per_report: 20
+steps_per_eval: 200
+val_batches: 25
+save_every: 200
